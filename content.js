@@ -6,7 +6,6 @@
 
     // Configuration
     const CONFIG = {
-        GRAPHQL_SERVER: 'https://your-graphql-server.com/graphql', // Update with your server URL
         SIDEBAR_WIDTH: 350,
         SIDEBAR_Z_INDEX: 9999,
         POLLING_INTERVAL: 1000,
@@ -39,7 +38,8 @@
             script.src = chrome.runtime.getURL('graphql-client-bundle.js');
             script.onload = () => {
                 if (window.GraphQLManager) {
-                    graphqlManager = new window.GraphQLManager(CONFIG.GRAPHQL_SERVER);
+                    // GraphQL manager will get server URL from extension storage
+                    graphqlManager = new window.GraphQLManager();
                     
                     // Set up callbacks
                     graphqlManager.setCallbacks({
@@ -60,6 +60,8 @@
                     }
                 } else {
                     console.error('[WatchTogether] GraphQLManager not found');
+                    // Fall back to localStorage mode
+                    console.log('[WatchTogether] Falling back to localStorage mode');
                 }
             };
             script.onerror = () => {
@@ -666,6 +668,79 @@
             toggleSidebar();
         }
     });
+
+    // Chrome extension message listener for popup communication
+    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+        console.log('[WatchTogether] Received message from popup:', request);
+        
+        switch (request.action) {
+            case 'GET_ROOM_INFO':
+                sendResponse({
+                    success: true,
+                    roomId: currentRoomId,
+                    status: connectionStatus,
+                    userCount: users.length,
+                    isGraphQLEnabled: isGraphQLEnabled
+                });
+                break;
+                
+            case 'CREATE_ROOM':
+                const roomId = generateRoomId();
+                createRoom(roomId);
+                sendResponse({
+                    success: true,
+                    roomId: roomId
+                });
+                break;
+                
+            case 'UPDATE_GRAPHQL_CONFIG':
+                if (request.serverUrl && graphqlManager) {
+                    console.log('[WatchTogether] Updating GraphQL server URL:', request.serverUrl);
+                    graphqlManager.serverUrl = request.serverUrl;
+                    // Reconnect if we have a room
+                    if (currentRoomId) {
+                        connectToGraphQLRoom();
+                    }
+                }
+                sendResponse({ success: true });
+                break;
+                
+            default:
+                sendResponse({ success: false, error: 'Unknown action' });
+        }
+        
+        return true; // Keep message channel open for async response
+    });
+
+    // Generate room ID helper
+    function generateRoomId() {
+        return Math.random().toString(36).substring(2, 8).toUpperCase();
+    }
+
+    // Create room with specific ID
+    function createRoom(roomId = null) {
+        currentRoomId = roomId || generateRoomId();
+        
+        // Update URL
+        const url = new URL(window.location);
+        url.hash = `room=${currentRoomId}`;
+        window.history.replaceState({}, '', url);
+        
+        console.log(`[WatchTogether] Room created: ${currentRoomId}`);
+        
+        // Connect to GraphQL if available
+        if (isGraphQLEnabled && graphqlManager) {
+            connectToGraphQLRoom();
+        }
+        
+        // Update sidebar
+        if (sidebarIframe && sidebarIframe.contentWindow) {
+            sidebarIframe.contentWindow.postMessage({
+                type: 'roomCreated',
+                roomId: currentRoomId
+            }, '*');
+        }
+    }
 
     // Initialize when DOM is ready
     if (document.readyState === 'loading') {
