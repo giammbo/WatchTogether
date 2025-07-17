@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {
+            width: 320px;
+            min-height: 200px;
+            margin: 0;
+            padding: 16px;
+            font-family: 'Netflix Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            background: #141414;
+            color: #ffffff;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #e5e5e5;
+            margin-bottom: 4px;
+        }
+
+        .subtitle {
+            font-size: 12px;
+            color: #999;
+        }
+
+        .status-section {
+            background: #1a1a1a;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+
+        .status-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #e5e5e5;
+            margin-bottom: 8px;
+        }
+
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            font-size: 13px;
+        }
+
+        .status-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .status-label {
+            color: #999;
+        }
+
+        .status-value {
+            color: #e5e5e5;
+            font-weight: 500;
+        }
+
+        .status-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #666;
+        }
+
+        .status-indicator.connecting {
+            background: #f5c518;
+            animation: pulse 1.5s infinite;
+        }
+
+        .status-indicator.ready {
+            background: #0071eb;
+        }
+
+        .status-indicator.connected {
+            background: #46d369;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+
+        .room-section {
+            background: #1a1a1a;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+
+        .room-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #e5e5e5;
+            margin-bottom: 8px;
+        }
+
+        .room-id {
+            font-size: 16px;
+            font-weight: 600;
+            color: #0071eb;
+            margin-bottom: 12px;
+            word-break: break-all;
+        }
+
+        .room-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .btn {
+            flex: 1;
+            background: #0071eb;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 12px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: background-color 0.2s ease;
+        }
+
+        .btn:hover {
+            background: #0056b3;
+        }
+
+        .btn:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: #333;
+        }
+
+        .btn-secondary:hover {
+            background: #555;
+        }
+
+        .btn-success {
+            background: #46d369;
+        }
+
+        .btn-success:hover {
+            background: #3baa5a;
+        }
+
+        .instructions {
+            background: #1a1a1a;
+            border-radius: 8px;
+            padding: 16px;
+            font-size: 12px;
+            color: #999;
+            line-height: 1.4;
+        }
+
+        .instructions h4 {
+            color: #e5e5e5;
+            margin: 0 0 8px 0;
+            font-size: 13px;
+        }
+
+        .instructions ul {
+            margin: 8px 0;
+            padding-left: 16px;
+        }
+
+        .instructions li {
+            margin-bottom: 4px;
+        }
+
+        .error {
+            background: #ff6b6b;
+            color: white;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 13px;
+            margin-bottom: 16px;
+        }
+
+        .success {
+            background: #46d369;
+            color: white;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 13px;
+            margin-bottom: 16px;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="title">WatchTogether</div>
+        <div class="subtitle">Guarda Netflix con amici</div>
+    </div>
+
+    <div id="errorMessage" class="error hidden"></div>
+    <div id="successMessage" class="success hidden"></div>
+
+    <div class="status-section">
+        <div class="status-title">Stato Connessione</div>
+        <div class="status-item">
+            <span class="status-label">Stato:</span>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <div class="status-indicator" id="statusIndicator"></div>
+                <span class="status-value" id="statusText">Disconnesso</span>
+            </div>
+        </div>
+        <div class="status-item">
+            <span class="status-label">Utenti connessi:</span>
+            <span class="status-value" id="connectedUsers">0</span>
+        </div>
+        <div class="status-item">
+            <span class="status-label">Pagina:</span>
+            <span class="status-value" id="pageType">Sconosciuta</span>
+        </div>
+    </div>
+
+    <div class="room-section">
+        <div class="room-title">Stanza</div>
+        <div class="room-id" id="roomId">Caricamento...</div>
+        <div style="font-size: 11px; color: #999; margin-bottom: 8px;">Link condivisibile:</div>
+        <div style="
+            background: #333;
+            border: 1px solid #555;
+            border-radius: 4px;
+            padding: 6px 8px;
+            color: #e5e5e5;
+            font-size: 10px;
+            font-family: monospace;
+            word-break: break-all;
+            margin-bottom: 12px;
+            max-height: 60px;
+            overflow-y: auto;
+        " id="shareableUrl">Caricamento...</div>
+        <div class="room-actions">
+            <button class="btn btn-secondary" id="copyButton">Copia Link</button>
+            <button class="btn" id="newRoomButton">Nuova Stanza</button>
+        </div>
+    </div>
+
+    <div class="instructions">
+        <h4>Come usare WatchTogether:</h4>
+        <ul>
+            <li>Vai su Netflix e apri un video</li>
+            <li>Clicca sul pulsante "WatchTogether" a destra</li>
+            <li>Condividi il link con i tuoi amici</li>
+            <li>Usa Ctrl+Shift+W per aprire/chiudere rapidamente</li>
+        </ul>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+</html> 
