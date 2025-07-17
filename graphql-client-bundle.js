@@ -4,18 +4,152 @@
 (function() {
     'use strict';
 
+    // Configuration helper
+    function getGraphQLConfig() {
+        // Try to get from extension storage first
+        return new Promise((resolve) => {
+            if (typeof chrome !== 'undefined' && chrome.storage) {
+                chrome.storage.sync.get(['graphqlServerUrl'], (result) => {
+                    const serverUrl = result.graphqlServerUrl || 'http://localhost:4000/graphql';
+                    resolve(serverUrl);
+                });
+            } else {
+                // Fallback for testing
+                resolve('http://localhost:4000/graphql');
+            }
+        });
+    }
+
+    // Simple WebSocket wrapper for subscriptions
+    class WebSocketManager {
+        constructor(wsUrl) {
+            this.wsUrl = wsUrl;
+            this.ws = null;
+            this.subscriptions = new Map();
+            this.isConnected = false;
+            this.reconnectAttempts = 0;
+            this.maxReconnectAttempts = 5;
+            this.reconnectDelay = 1000;
+        }
+
+        async connect() {
+            return new Promise((resolve, reject) => {
+                try {
+                    this.ws = new WebSocket(this.wsUrl);
+                    
+                    this.ws.onopen = () => {
+                        console.log('[GraphQL WS] Connected');
+                        this.isConnected = true;
+                        this.reconnectAttempts = 0;
+                        resolve();
+                    };
+                    
+                    this.ws.onmessage = (event) => {
+                        try {
+                            const message = JSON.parse(event.data);
+                            this.handleMessage(message);
+                        } catch (error) {
+                            console.error('[GraphQL WS] Failed to parse message:', error);
+                        }
+                    };
+                    
+                    this.ws.onclose = () => {
+                        console.log('[GraphQL WS] Disconnected');
+                        this.isConnected = false;
+                        this.attemptReconnect();
+                    };
+                    
+                    this.ws.onerror = (error) => {
+                        console.error('[GraphQL WS] Error:', error);
+                        reject(error);
+                    };
+                    
+                    // Connection timeout
+                    setTimeout(() => {
+                        if (!this.isConnected) {
+                            reject(new Error('WebSocket connection timeout'));
+                        }
+                    }, 10000);
+                    
+                } catch (error) {
+                    reject(error);
+                }
+            });
+        }
+
+        attemptReconnect() {
+            if (this.reconnectAttempts < this.maxReconnectAttempts) {
+                this.reconnectAttempts++;
+                console.log(`[GraphQL WS] Reconnecting... Attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}`);
+                
+                setTimeout(() => {
+                    this.connect().catch(error => {
+                        console.error('[GraphQL WS] Reconnection failed:', error);
+                    });
+                }, this.reconnectDelay * this.reconnectAttempts);
+            } else {
+                console.error('[GraphQL WS] Max reconnection attempts reached');
+            }
+        }
+
+        handleMessage(message) {
+            if (message.type === 'data' && message.payload) {
+                const { subscription, data } = message.payload;
+                const handler = this.subscriptions.get(subscription);
+                if (handler) {
+                    handler(data);
+                }
+            }
+        }
+
+        subscribe(query, variables, handler) {
+            const subscriptionId = 'sub_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+            this.subscriptions.set(subscriptionId, handler);
+            
+            if (this.isConnected) {
+                this.ws.send(JSON.stringify({
+                    type: 'subscription',
+                    payload: {
+                        query: query,
+                        variables: variables,
+                        subscriptionId: subscriptionId
+                    }
+                }));
+            }
+            
+            return subscriptionId;
+        }
+
+        unsubscribe(subscriptionId) {
+            this.subscriptions.delete(subscriptionId);
+            if (this.isConnected) {
+                this.ws.send(JSON.stringify({
+                    type: 'unsubscribe',
+                    payload: { subscriptionId: subscriptionId }
+                }));
+            }
+        }
+
+        disconnect() {
+            if (this.ws) {
+                this.ws.close();
+                this.ws = null;
+            }
+            this.subscriptions.clear();
+            this.isConnected = false;
+        }
+    }
+
     // Simple GraphQL client for Chrome extension
     class GraphQLManager {
-        constructor(serverUrl = 'https://your-graphql-server.com/graphql') {
+        constructor(serverUrl = null) {
             this.serverUrl = serverUrl;
-            this.wsUrl = serverUrl.replace('https', 'wss').replace('http', 'ws');
-            this.client = null;
-            this.subscriptions = new Map();
+            this.wsUrl = null;
+            this.wsManager = null;
             this.roomId = null;
             this.sessionId = null;
             this.isConnected = false;
-            this.wsConnection = null;
-            this.subscriptionId = 0;
+            this.activeSubscriptions = new Map();
             
             // Event callbacks
             this.onPlayerEvent = null;
@@ -33,166 +167,51 @@
             try {
                 console.log('[GraphQL] Initializing client...');
                 
-                // Test connection with a simple query
-                const response = await fetch(this.serverUrl, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        query: '{ rooms { id userCount } }'
-                    })
-                });
+                // Get server URL if not provided
+                if (!this.serverUrl) {
+                    this.serverUrl = await getGraphQLConfig();
+                }
                 
-                if (response.ok) {
+                // Setup WebSocket URL
+                this.wsUrl = this.serverUrl.replace('http://', 'ws://').replace('https://', 'wss://').replace('/graphql', '/graphql-ws');
+                
+                // Test HTTP connection first
+                const response = await this.query('{ rooms { id userCount } }');
+                
+                if (response && !response.errors) {
+                    console.log('[GraphQL] HTTP connection successful');
+                    
+                    // Try to establish WebSocket connection for subscriptions
+                    try {
+                        this.wsManager = new WebSocketManager(this.wsUrl);
+                        await this.wsManager.connect();
+                        console.log('[GraphQL] WebSocket connection successful');
+                    } catch (wsError) {
+                        console.warn('[GraphQL] WebSocket connection failed, continuing with HTTP only:', wsError);
+                    }
+                    
                     this.isConnected = true;
                     this.notifyConnectionStateChange('connected');
                     console.log('[GraphQL] Client initialized successfully');
                     return true;
                 } else {
-                    throw new Error('Failed to connect to GraphQL server');
+                    throw new Error('GraphQL server not responding correctly');
                 }
                 
             } catch (error) {
-                console.error('[GraphQL] Failed to initialize client:', error);
+                console.error('[GraphQL] Failed to initialize:', error);
                 this.isConnected = false;
                 this.notifyConnectionStateChange('error');
                 throw error;
             }
         }
 
-        // Initialize WebSocket for subscriptions
-        async initializeWebSocket() {
+        // Execute GraphQL query/mutation
+        async query(query, variables = {}) {
             try {
-                console.log('[GraphQL] Initializing WebSocket...');
-                
-                this.wsConnection = new WebSocket(this.wsUrl, 'graphql-transport-ws');
-                
-                this.wsConnection.onopen = () => {
-                    console.log('[GraphQL] WebSocket connected');
-                    this.sendWebSocketMessage({
-                        type: 'connection_init',
-                        payload: {
-                            sessionId: this.sessionId
-                        }
-                    });
-                };
-                
-                this.wsConnection.onmessage = (event) => {
-                    const message = JSON.parse(event.data);
-                    this.handleWebSocketMessage(message);
-                };
-                
-                this.wsConnection.onclose = () => {
-                    console.log('[GraphQL] WebSocket disconnected');
-                    this.isConnected = false;
-                    this.notifyConnectionStateChange('disconnected');
-                };
-                
-                this.wsConnection.onerror = (error) => {
-                    console.error('[GraphQL] WebSocket error:', error);
-                    this.notifyConnectionStateChange('error');
-                };
-                
-            } catch (error) {
-                console.error('[GraphQL] Failed to initialize WebSocket:', error);
-                throw error;
-            }
-        }
-
-        // Send WebSocket message
-        sendWebSocketMessage(message) {
-            if (this.wsConnection && this.wsConnection.readyState === WebSocket.OPEN) {
-                this.wsConnection.send(JSON.stringify(message));
-            }
-        }
-
-        // Handle WebSocket message
-        handleWebSocketMessage(message) {
-            switch (message.type) {
-                case 'connection_ack':
-                    console.log('[GraphQL] WebSocket connection acknowledged');
-                    this.setupSubscriptions();
-                    break;
-                    
-                case 'next':
-                    this.handleSubscriptionData(message.payload);
-                    break;
-                    
-                case 'error':
-                    console.error('[GraphQL] WebSocket error:', message.payload);
-                    break;
-                    
-                case 'complete':
-                    console.log('[GraphQL] Subscription completed:', message.id);
-                    break;
-            }
-        }
-
-        // Handle subscription data
-        handleSubscriptionData(data) {
-            if (data.data) {
-                const subscriptionData = data.data;
-                
-                if (subscriptionData.userJoined && subscriptionData.userJoined.roomId === this.roomId) {
-                    const user = subscriptionData.userJoined;
-                    if (user.sessionId !== this.sessionId) {
-                        console.log('[GraphQL] User joined:', user);
-                        this.onUserJoined && this.onUserJoined(user);
-                    }
+                if (!this.serverUrl) {
+                    throw new Error('Server URL not configured');
                 }
-                
-                if (subscriptionData.userLeft && subscriptionData.userLeft.roomId === this.roomId) {
-                    const user = subscriptionData.userLeft;
-                    if (user.sessionId !== this.sessionId) {
-                        console.log('[GraphQL] User left:', user);
-                        this.onUserLeft && this.onUserLeft(user);
-                    }
-                }
-                
-                if (subscriptionData.messageReceived && subscriptionData.messageReceived.roomId === this.roomId) {
-                    const message = subscriptionData.messageReceived;
-                    if (message.sessionId !== this.sessionId) {
-                        console.log('[GraphQL] Message received:', message);
-                        this.onChatMessage && this.onChatMessage(message);
-                    }
-                }
-                
-                if (subscriptionData.playerEventReceived && subscriptionData.playerEventReceived.roomId === this.roomId) {
-                    const event = subscriptionData.playerEventReceived;
-                    if (event.sessionId !== this.sessionId) {
-                        console.log('[GraphQL] Player event received:', event);
-                        this.onPlayerEvent && this.onPlayerEvent(event);
-                    }
-                }
-                
-                if (subscriptionData.roomUpdated && subscriptionData.roomUpdated.id === this.roomId) {
-                    const room = subscriptionData.roomUpdated;
-                    console.log('[GraphQL] Room updated:', room);
-                    this.onRoomUpdated && this.onRoomUpdated(room);
-                }
-            }
-        }
-
-        // Join room
-        async joinRoom(roomId, sessionId, nickname = null) {
-            this.roomId = roomId;
-            this.sessionId = sessionId;
-            
-            try {
-                console.log(`[GraphQL] Joining room ${roomId} with session ${sessionId}`);
-                
-                const mutation = `
-                    mutation JoinRoom($roomId: String!, $sessionId: String!, $nickname: String) {
-                        joinRoom(roomId: $roomId, sessionId: $sessionId, nickname: $nickname) {
-                            sessionId
-                            roomId
-                            nickname
-                            lastSeen
-                            isHost
-                        }
-                    }
-                `;
                 
                 const response = await fetch(this.serverUrl, {
                     method: 'POST',
@@ -200,447 +219,27 @@
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({
-                        query: mutation,
-                        variables: { roomId, sessionId, nickname }
+                        query: query,
+                        variables: variables
                     })
                 });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
                 
                 const result = await response.json();
                 
                 if (result.errors) {
-                    throw new Error(result.errors[0].message);
+                    console.error('[GraphQL] Query errors:', result.errors);
+                    return { errors: result.errors };
                 }
                 
-                console.log('[GraphQL] Successfully joined room:', result.data.joinRoom);
-                
-                // Initialize WebSocket for subscriptions
-                await this.initializeWebSocket();
-                
-                // Start heartbeat
-                this.startHeartbeat();
-                
-                return result.data.joinRoom;
+                return result;
                 
             } catch (error) {
-                console.error('[GraphQL] Failed to join room:', error);
-                throw error;
-            }
-        }
-
-        // Leave room
-        async leaveRoom() {
-            if (!this.sessionId) {
-                return false;
-            }
-            
-            try {
-                console.log(`[GraphQL] Leaving room ${this.roomId}`);
-                
-                const mutation = `
-                    mutation LeaveRoom($sessionId: String!) {
-                        leaveRoom(sessionId: $sessionId)
-                    }
-                `;
-                
-                const response = await fetch(this.serverUrl, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        query: mutation,
-                        variables: { sessionId: this.sessionId }
-                    })
-                });
-                
-                const result = await response.json();
-                
-                // Clean up subscriptions
-                this.cleanupSubscriptions();
-                
-                // Stop heartbeat
-                this.stopHeartbeat();
-                
-                // Close WebSocket
-                if (this.wsConnection) {
-                    this.wsConnection.close();
-                    this.wsConnection = null;
-                }
-                
-                this.roomId = null;
-                this.sessionId = null;
-                
-                console.log('[GraphQL] Successfully left room');
-                return result.data.leaveRoom;
-                
-            } catch (error) {
-                console.error('[GraphQL] Failed to leave room:', error);
-                return false;
-            }
-        }
-
-        // Send chat message
-        async sendChatMessage(text, sender) {
-            if (!this.roomId || !this.sessionId) {
-                throw new Error('Not connected to any room');
-            }
-            
-            try {
-                const mutation = `
-                    mutation SendMessage($roomId: String!, $sessionId: String!, $text: String!, $sender: String!) {
-                        sendMessage(roomId: $roomId, sessionId: $sessionId, text: $text, sender: $sender) {
-                            id
-                            text
-                            sender
-                            sessionId
-                            timestamp
-                            roomId
-                        }
-                    }
-                `;
-                
-                const response = await fetch(this.serverUrl, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        query: mutation,
-                        variables: {
-                            roomId: this.roomId,
-                            sessionId: this.sessionId,
-                            text,
-                            sender
-                        }
-                    })
-                });
-                
-                const result = await response.json();
-                
-                if (result.errors) {
-                    throw new Error(result.errors[0].message);
-                }
-                
-                console.log('[GraphQL] Message sent:', result.data.sendMessage);
-                return result.data.sendMessage;
-                
-            } catch (error) {
-                console.error('[GraphQL] Failed to send message:', error);
-                throw error;
-            }
-        }
-
-        // Send player event
-        async sendPlayerEvent(action, currentTime) {
-            if (!this.roomId || !this.sessionId) {
-                throw new Error('Not connected to any room');
-            }
-            
-            try {
-                const mutation = `
-                    mutation SendPlayerEvent($roomId: String!, $sessionId: String!, $action: String!, $currentTime: Float!) {
-                        sendPlayerEvent(roomId: $roomId, sessionId: $sessionId, action: $action, currentTime: $currentTime) {
-                            id
-                            action
-                            currentTime
-                            timestamp
-                            sessionId
-                            roomId
-                        }
-                    }
-                `;
-                
-                const response = await fetch(this.serverUrl, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        query: mutation,
-                        variables: {
-                            roomId: this.roomId,
-                            sessionId: this.sessionId,
-                            action,
-                            currentTime
-                        }
-                    })
-                });
-                
-                const result = await response.json();
-                
-                if (result.errors) {
-                    throw new Error(result.errors[0].message);
-                }
-                
-                console.log('[GraphQL] Player event sent:', result.data.sendPlayerEvent);
-                return result.data.sendPlayerEvent;
-                
-            } catch (error) {
-                console.error('[GraphQL] Failed to send player event:', error);
-                throw error;
-            }
-        }
-
-        // Update user nickname
-        async updateNickname(nickname) {
-            if (!this.sessionId) {
-                throw new Error('Not connected');
-            }
-            
-            try {
-                const mutation = `
-                    mutation UpdateUser($sessionId: String!, $nickname: String!) {
-                        updateUser(sessionId: $sessionId, nickname: $nickname) {
-                            sessionId
-                            roomId
-                            nickname
-                            lastSeen
-                            isHost
-                        }
-                    }
-                `;
-                
-                const response = await fetch(this.serverUrl, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        query: mutation,
-                        variables: {
-                            sessionId: this.sessionId,
-                            nickname
-                        }
-                    })
-                });
-                
-                const result = await response.json();
-                
-                if (result.errors) {
-                    throw new Error(result.errors[0].message);
-                }
-                
-                console.log('[GraphQL] User updated:', result.data.updateUser);
-                return result.data.updateUser;
-                
-            } catch (error) {
-                console.error('[GraphQL] Failed to update user:', error);
-                throw error;
-            }
-        }
-
-        // Get room information
-        async getRoomInfo() {
-            if (!this.roomId) {
-                throw new Error('Not connected to any room');
-            }
-            
-            try {
-                const query = `
-                    query GetRoom($roomId: String!) {
-                        room(roomId: $roomId) {
-                            id
-                            userCount
-                            users {
-                                sessionId
-                                roomId
-                                nickname
-                                lastSeen
-                                isHost
-                            }
-                            messages {
-                                id
-                                text
-                                sender
-                                sessionId
-                                timestamp
-                                roomId
-                            }
-                            playerEvents {
-                                id
-                                action
-                                currentTime
-                                timestamp
-                                sessionId
-                                roomId
-                            }
-                        }
-                    }
-                `;
-                
-                const response = await fetch(this.serverUrl, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        query,
-                        variables: { roomId: this.roomId }
-                    })
-                });
-                
-                const result = await response.json();
-                
-                if (result.errors) {
-                    throw new Error(result.errors[0].message);
-                }
-                
-                return result.data.room;
-                
-            } catch (error) {
-                console.error('[GraphQL] Failed to get room info:', error);
-                throw error;
-            }
-        }
-
-        // Set up subscriptions
-        setupSubscriptions() {
-            if (!this.roomId) return;
-            
-            console.log('[GraphQL] Setting up subscriptions for room:', this.roomId);
-            
-            // Subscribe to user joined events
-            this.subscribe('userJoined', `
-                subscription UserJoined($roomId: String!) {
-                    userJoined(roomId: $roomId) {
-                        sessionId
-                        roomId
-                        nickname
-                        lastSeen
-                        isHost
-                    }
-                }
-            `, { roomId: this.roomId });
-            
-            // Subscribe to user left events
-            this.subscribe('userLeft', `
-                subscription UserLeft($roomId: String!) {
-                    userLeft(roomId: $roomId) {
-                        sessionId
-                        roomId
-                        nickname
-                        lastSeen
-                        isHost
-                    }
-                }
-            `, { roomId: this.roomId });
-            
-            // Subscribe to chat messages
-            this.subscribe('messageReceived', `
-                subscription MessageReceived($roomId: String!) {
-                    messageReceived(roomId: $roomId) {
-                        id
-                        text
-                        sender
-                        sessionId
-                        timestamp
-                        roomId
-                    }
-                }
-            `, { roomId: this.roomId });
-            
-            // Subscribe to player events
-            this.subscribe('playerEventReceived', `
-                subscription PlayerEventReceived($roomId: String!) {
-                    playerEventReceived(roomId: $roomId) {
-                        id
-                        action
-                        currentTime
-                        timestamp
-                        sessionId
-                        roomId
-                    }
-                }
-            `, { roomId: this.roomId });
-            
-            // Subscribe to room updates
-            this.subscribe('roomUpdated', `
-                subscription RoomUpdated($roomId: String!) {
-                    roomUpdated(roomId: $roomId) {
-                        id
-                        userCount
-                        users {
-                            sessionId
-                            roomId
-                            nickname
-                            lastSeen
-                            isHost
-                        }
-                    }
-                }
-            `, { roomId: this.roomId });
-        }
-
-        // Subscribe to GraphQL subscription
-        subscribe(name, query, variables) {
-            if (!this.wsConnection || this.wsConnection.readyState !== WebSocket.OPEN) {
-                console.warn('[GraphQL] WebSocket not connected, cannot subscribe');
-                return;
-            }
-            
-            const id = (++this.subscriptionId).toString();
-            
-            this.sendWebSocketMessage({
-                id: id,
-                type: 'subscribe',
-                payload: {
-                    query: query,
-                    variables: variables
-                }
-            });
-            
-            this.subscriptions.set(name, id);
-            console.log(`[GraphQL] Subscribed to ${name} with id ${id}`);
-        }
-
-        // Clean up subscriptions
-        cleanupSubscriptions() {
-            console.log('[GraphQL] Cleaning up subscriptions');
-            
-            this.subscriptions.forEach((id, name) => {
-                this.sendWebSocketMessage({
-                    id: id,
-                    type: 'complete'
-                });
-                console.log(`[GraphQL] Unsubscribed from ${name}`);
-            });
-            
-            this.subscriptions.clear();
-        }
-
-        // Start heartbeat
-        startHeartbeat() {
-            this.heartbeatInterval = setInterval(async () => {
-                if (this.sessionId) {
-                    try {
-                        const mutation = `
-                            mutation Heartbeat($sessionId: String!) {
-                                heartbeat(sessionId: $sessionId)
-                            }
-                        `;
-                        
-                        await fetch(this.serverUrl, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                            },
-                            body: JSON.stringify({
-                                query: mutation,
-                                variables: { sessionId: this.sessionId }
-                            })
-                        });
-                    } catch (error) {
-                        console.error('[GraphQL] Heartbeat failed:', error);
-                    }
-                }
-            }, 30000); // Every 30 seconds
-        }
-
-        // Stop heartbeat
-        stopHeartbeat() {
-            if (this.heartbeatInterval) {
-                clearInterval(this.heartbeatInterval);
-                this.heartbeatInterval = null;
+                console.error('[GraphQL] Query failed:', error);
+                return { errors: [{ message: error.message }] };
             }
         }
 
@@ -654,62 +253,274 @@
             this.onConnectionStateChange = callbacks.onConnectionStateChange;
         }
 
+        // Join room
+        async joinRoom(roomId, sessionId, userName) {
+            try {
+                this.roomId = roomId;
+                this.sessionId = sessionId;
+                
+                const mutation = `
+                    mutation JoinRoom($roomId: String!, $sessionId: String!, $userName: String!) {
+                        joinRoom(roomId: $roomId, sessionId: $sessionId, userName: $userName) {
+                            id
+                            sessionId
+                            userName
+                            joinedAt
+                        }
+                    }
+                `;
+                
+                const result = await this.query(mutation, {
+                    roomId: roomId,
+                    sessionId: sessionId,
+                    userName: userName
+                });
+                
+                if (result.errors) {
+                    throw new Error(result.errors[0].message);
+                }
+                
+                // Set up subscriptions
+                this.setupSubscriptions();
+                
+                return result.data.joinRoom;
+                
+            } catch (error) {
+                console.error('[GraphQL] Failed to join room:', error);
+                throw error;
+            }
+        }
+
+        // Set up real-time subscriptions
+        setupSubscriptions() {
+            if (!this.wsManager || !this.wsManager.isConnected || !this.roomId) {
+                console.warn('[GraphQL] Cannot setup subscriptions - WebSocket not available');
+                return;
+            }
+            
+            // Subscribe to chat messages
+            const chatSubscription = `
+                subscription ChatMessages($roomId: String!) {
+                    chatMessageAdded(roomId: $roomId) {
+                        id
+                        text
+                        sender
+                        timestamp
+                    }
+                }
+            `;
+            
+            this.wsManager.subscribe(chatSubscription, { roomId: this.roomId }, (data) => {
+                if (data.chatMessageAdded && this.onChatMessage) {
+                    this.onChatMessage(data.chatMessageAdded);
+                }
+            });
+            
+            // Subscribe to player events
+            const playerSubscription = `
+                subscription PlayerEvents($roomId: String!) {
+                    playerEventAdded(roomId: $roomId) {
+                        id
+                        event
+                        data
+                        sessionId
+                        timestamp
+                    }
+                }
+            `;
+            
+            this.wsManager.subscribe(playerSubscription, { roomId: this.roomId }, (data) => {
+                if (data.playerEventAdded && this.onPlayerEvent) {
+                    this.onPlayerEvent(data.playerEventAdded);
+                }
+            });
+            
+            // Subscribe to room updates
+            const roomSubscription = `
+                subscription RoomUpdates($roomId: String!) {
+                    roomUpdated(roomId: $roomId) {
+                        id
+                        userCount
+                        users {
+                            id
+                            sessionId
+                            userName
+                            joinedAt
+                        }
+                    }
+                }
+            `;
+            
+            this.wsManager.subscribe(roomSubscription, { roomId: this.roomId }, (data) => {
+                if (data.roomUpdated && this.onRoomUpdated) {
+                    this.onRoomUpdated(data.roomUpdated);
+                }
+            });
+        }
+
+        // Send chat message
+        async sendChatMessage(text) {
+            try {
+                const mutation = `
+                    mutation SendMessage($roomId: String!, $sessionId: String!, $text: String!) {
+                        sendMessage(roomId: $roomId, sessionId: $sessionId, text: $text) {
+                            id
+                            text
+                            sender
+                            timestamp
+                        }
+                    }
+                `;
+                
+                const result = await this.query(mutation, {
+                    roomId: this.roomId,
+                    sessionId: this.sessionId,
+                    text: text
+                });
+                
+                if (result.errors) {
+                    throw new Error(result.errors[0].message);
+                }
+                
+                return result.data.sendMessage;
+                
+            } catch (error) {
+                console.error('[GraphQL] Failed to send message:', error);
+                throw error;
+            }
+        }
+
+        // Send player event
+        async sendPlayerEvent(event, data) {
+            try {
+                const mutation = `
+                    mutation SendPlayerEvent($roomId: String!, $sessionId: String!, $event: String!, $data: String!) {
+                        sendPlayerEvent(roomId: $roomId, sessionId: $sessionId, event: $event, data: $data) {
+                            id
+                            event
+                            data
+                            sessionId
+                            timestamp
+                        }
+                    }
+                `;
+                
+                const result = await this.query(mutation, {
+                    roomId: this.roomId,
+                    sessionId: this.sessionId,
+                    event: event,
+                    data: JSON.stringify(data)
+                });
+                
+                if (result.errors) {
+                    throw new Error(result.errors[0].message);
+                }
+                
+                return result.data.sendPlayerEvent;
+                
+            } catch (error) {
+                console.error('[GraphQL] Failed to send player event:', error);
+                throw error;
+            }
+        }
+
+        // Leave room
+        async leaveRoom() {
+            try {
+                if (!this.roomId || !this.sessionId) {
+                    return;
+                }
+                
+                const mutation = `
+                    mutation LeaveRoom($roomId: String!, $sessionId: String!) {
+                        leaveRoom(roomId: $roomId, sessionId: $sessionId)
+                    }
+                `;
+                
+                await this.query(mutation, {
+                    roomId: this.roomId,
+                    sessionId: this.sessionId
+                });
+                
+                // Clean up subscriptions
+                if (this.wsManager) {
+                    this.wsManager.disconnect();
+                }
+                
+                this.roomId = null;
+                this.sessionId = null;
+                
+            } catch (error) {
+                console.error('[GraphQL] Failed to leave room:', error);
+            }
+        }
+
+        // Get room info
+        async getRoomInfo(roomId) {
+            try {
+                const query = `
+                    query GetRoom($roomId: String!) {
+                        room(id: $roomId) {
+                            id
+                            userCount
+                            users {
+                                id
+                                sessionId
+                                userName
+                                joinedAt
+                            }
+                        }
+                    }
+                `;
+                
+                const result = await this.query(query, { roomId: roomId });
+                
+                if (result.errors) {
+                    throw new Error(result.errors[0].message);
+                }
+                
+                return result.data.room;
+                
+            } catch (error) {
+                console.error('[GraphQL] Failed to get room info:', error);
+                throw error;
+            }
+        }
+
         // Notify connection state change
         notifyConnectionStateChange(state) {
-            this.onConnectionStateChange && this.onConnectionStateChange(state);
-        }
-
-        // Get connection state
-        getConnectionState() {
-            return this.isConnected ? 'connected' : 'disconnected';
-        }
-
-        // Get current room ID
-        getRoomId() {
-            return this.roomId;
-        }
-
-        // Get current session ID
-        getSessionId() {
-            return this.sessionId;
+            if (this.onConnectionStateChange) {
+                this.onConnectionStateChange(state);
+            }
         }
 
         // Check if connected
-        isConnectedToRoom() {
-            return this.isConnected && this.roomId && this.sessionId;
+        isConnectionActive() {
+            return this.isConnected;
         }
 
-        // Cleanup
+        // Destroy client
         destroy() {
-            console.log('[GraphQL] Destroying manager...');
-            
-            // Leave room if connected
-            if (this.isConnectedToRoom()) {
-                this.leaveRoom();
+            if (this.wsManager) {
+                this.wsManager.disconnect();
             }
-            
-            // Clean up subscriptions
-            this.cleanupSubscriptions();
-            
-            // Stop heartbeat
-            this.stopHeartbeat();
-            
-            // Close WebSocket
-            if (this.wsConnection) {
-                this.wsConnection.close();
-                this.wsConnection = null;
-            }
-            
             this.isConnected = false;
-            console.log('[GraphQL] Manager destroyed');
+            this.roomId = null;
+            this.sessionId = null;
         }
     }
 
-    // Export for use in Chrome extension
-    if (typeof module !== 'undefined' && module.exports) {
-        module.exports = GraphQLManager;
-    } else {
-        window.GraphQLManager = GraphQLManager;
-    }
+    // Export to global scope for Chrome extension use
+    window.GraphQLManager = GraphQLManager;
+    
+    // Also create a helper for configuration
+    window.configureGraphQL = async function(serverUrl) {
+        if (typeof chrome !== 'undefined' && chrome.storage) {
+            await chrome.storage.sync.set({ graphqlServerUrl: serverUrl });
+            console.log('[GraphQL] Server URL configured:', serverUrl);
+        }
+    };
+    
+    console.log('[GraphQL] Client bundle loaded');
 
 })(); 
