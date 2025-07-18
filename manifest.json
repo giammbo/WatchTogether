@@ -1,22 +1,17 @@
 {
   "manifest_version": 3,
-  "name": "WatchTogether",
+  "name": "Netflix Watch Party",
   "version": "1.0.0",
-  "description": "Watch Netflix together with friends in real-time with synchronized playback and chat",
-  
+  "description": "Watch Netflix together in sync with friends",
   "permissions": [
     "activeTab",
     "storage",
-    "scripting",
-    "notifications"
+    "scripting"
   ],
-  
   "host_permissions": [
     "https://www.netflix.com/*",
-    "https://*/*",
-    "http://localhost:*/*"
+    "https://watchparty.fake/*"
   ],
-  
   "content_scripts": [
     {
       "matches": ["https://www.netflix.com/*"],
@@ -24,39 +19,17 @@
       "run_at": "document_end"
     }
   ],
-  
-  "web_accessible_resources": [
-    {
-      "resources": [
-        "sidebar.html",
-        "sidebar.css",
-        "graphql-client-bundle.js"
-      ],
-      "matches": ["https://www.netflix.com/*"]
-    }
-  ],
-  
   "action": {
     "default_popup": "popup.html",
-    "default_title": "WatchTogether",
-    "default_icon": {
-      "16": "icons/icon16.png",
-      "48": "icons/icon48.png",
-      "128": "icons/icon128.png"
-    }
+    "default_title": "Netflix Watch Party"
   },
-  
   "icons": {
     "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  
   "background": {
     "service_worker": "background.js"
-  },
-  
-  "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self';"
   }
 } 

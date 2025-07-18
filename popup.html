@@ -1,357 +1,168 @@
 <!DOCTYPE html>
-<html lang="it">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WatchTogether</title>
+    <title>Netflix Watch Party</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
         body {
-            width: 350px;
-            min-height: 500px;
+            width: 320px;
+            min-height: 200px;
+            margin: 0;
+            padding: 16px;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            background: #141414;
             color: #ffffff;
-            overflow: hidden;
-        }
-
-        .container {
-            padding: 20px;
         }
 
         .header {
             text-align: center;
-            margin-bottom: 24px;
-            padding-bottom: 16px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        .logo {
-            font-size: 24px;
-            font-weight: bold;
-            background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin-bottom: 8px;
-        }
-
-        .subtitle {
-            font-size: 14px;
-            color: rgba(255, 255, 255, 0.7);
-        }
-
-        .status-section {
             margin-bottom: 20px;
         }
 
-        .status-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 12px;
-            padding: 8px 0;
-        }
-
-        .status-indicator {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            margin-right: 8px;
-        }
-
-        .status-indicator.online {
-            background-color: #00ff88;
-            box-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
-        }
-
-        .status-indicator.offline {
-            background-color: #ff4757;
-            box-shadow: 0 0 10px rgba(255, 71, 87, 0.5);
-        }
-
-        .status-indicator.warning {
-            background-color: #ffa502;
-            box-shadow: 0 0 10px rgba(255, 165, 2, 0.5);
-        }
-
-        .status-text {
-            display: flex;
-            align-items: center;
-            font-size: 14px;
-        }
-
-        .label {
-            font-size: 12px;
-            color: rgba(255, 255, 255, 0.6);
-            margin-bottom: 4px;
-        }
-
-        .value {
-            font-size: 14px;
-            font-weight: 500;
-        }
-
-        .config-section {
-            margin-bottom: 20px;
-            padding: 16px;
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 8px;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        .config-title {
-            font-size: 14px;
-            font-weight: 600;
-            margin-bottom: 12px;
-            color: #4ecdc4;
-        }
-
-        .input-group {
-            margin-bottom: 12px;
-        }
-
-        .input-group label {
-            display: block;
-            font-size: 12px;
-            color: rgba(255, 255, 255, 0.7);
-            margin-bottom: 4px;
-        }
-
-        .input-group input {
-            width: 100%;
-            padding: 8px 12px;
-            background: rgba(255, 255, 255, 0.1);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 4px;
-            color: #ffffff;
-            font-size: 12px;
-        }
-
-        .input-group input:focus {
-            outline: none;
-            border-color: #4ecdc4;
-            box-shadow: 0 0 0 2px rgba(78, 205, 196, 0.2);
-        }
-
-        .input-group input::placeholder {
-            color: rgba(255, 255, 255, 0.4);
-        }
-
-        .room-section {
-            margin-bottom: 20px;
-        }
-
-        .room-id-display {
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 8px;
-            padding: 12px;
-            text-align: center;
-            margin-bottom: 12px;
-        }
-
-        .room-id {
+        .header h1 {
+            margin: 0;
             font-size: 18px;
-            font-weight: bold;
-            letter-spacing: 2px;
-            color: #4ecdc4;
-            margin-bottom: 4px;
-        }
-
-        .share-url {
-            font-size: 11px;
-            color: rgba(255, 255, 255, 0.5);
-            word-break: break-all;
-            line-height: 1.4;
+            font-weight: 600;
+            color: #e50914;
         }
 
         .button {
             width: 100%;
-            padding: 12px;
-            background: linear-gradient(45deg, #4ecdc4, #44a08d);
+            padding: 12px 16px;
+            margin: 8px 0;
             border: none;
-            border-radius: 6px;
-            color: white;
+            border-radius: 4px;
             font-size: 14px;
-            font-weight: 600;
+            font-weight: 500;
             cursor: pointer;
             transition: all 0.2s ease;
-            margin-bottom: 8px;
         }
 
-        .button:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(78, 205, 196, 0.3);
+        .btn-primary {
+            background: #e50914;
+            color: white;
         }
 
-        .button:active {
-            transform: translateY(0);
+        .btn-primary:hover {
+            background: #f40612;
         }
 
-        .button.secondary {
-            background: linear-gradient(45deg, #ff6b6b, #ee5a52);
+        .btn-secondary {
+            background: #333;
+            color: white;
         }
 
-        .button.secondary:hover {
-            box-shadow: 0 4px 12px rgba(255, 107, 107, 0.3);
+        .btn-secondary:hover {
+            background: #444;
         }
 
-        .button.small {
-            padding: 6px 12px;
-            font-size: 12px;
-            width: auto;
-            margin-bottom: 0;
-        }
-
-        .button-group {
-            display: flex;
-            gap: 8px;
-        }
-
-        .button-group .button {
-            flex: 1;
-        }
-
-        .message {
-            padding: 8px 12px;
+        .status {
+            margin: 16px 0;
+            padding: 12px;
             border-radius: 4px;
+            font-size: 13px;
+            display: none;
+        }
+
+        .status.success {
+            background: #1a472a;
+            color: #4ade80;
+            display: block;
+        }
+
+        .status.error {
+            background: #450a0a;
+            color: #f87171;
+            display: block;
+        }
+
+        .room-info {
+            margin: 16px 0;
+            padding: 12px;
+            background: #1f1f1f;
+            border-radius: 4px;
+            display: none;
+        }
+
+        .room-info.show {
+            display: block;
+        }
+
+        .room-url {
+            background: #333;
+            padding: 8px;
+            border-radius: 4px;
+            font-family: monospace;
             font-size: 12px;
-            margin-bottom: 12px;
+            word-break: break-all;
+            margin: 8px 0;
+        }
+
+        .copy-btn {
+            background: #666;
+            color: white;
+            border: none;
+            padding: 4px 8px;
+            border-radius: 2px;
+            font-size: 11px;
+            cursor: pointer;
+        }
+
+        .copy-btn:hover {
+            background: #777;
+        }
+
+        .participants {
+            margin-top: 12px;
+            font-size: 12px;
+            color: #ccc;
+        }
+
+        .loading {
             text-align: center;
-        }
-
-        .message.error {
-            background: rgba(255, 71, 87, 0.1);
-            border: 1px solid rgba(255, 71, 87, 0.3);
-            color: #ff4757;
-        }
-
-        .message.success {
-            background: rgba(0, 255, 136, 0.1);
-            border: 1px solid rgba(0, 255, 136, 0.3);
-            color: #00ff88;
-        }
-
-        .message.warning {
-            background: rgba(255, 165, 2, 0.1);
-            border: 1px solid rgba(255, 165, 2, 0.3);
-            color: #ffa502;
+            color: #ccc;
+            font-size: 13px;
         }
 
         .hidden {
-            display: none !important;
-        }
-
-        .footer {
-            text-align: center;
-            padding-top: 16px;
-            border-top: 1px solid rgba(255, 255, 255, 0.1);
-            font-size: 11px;
-            color: rgba(255, 255, 255, 0.4);
-        }
-
-        .connection-status {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 8px;
-        }
-
-        .connection-details {
-            font-size: 11px;
-            color: rgba(255, 255, 255, 0.5);
+            display: none;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <!-- Header -->
-        <div class="header">
-            <div class="logo">WatchTogether</div>
-            <div class="subtitle">Sincronizza Netflix con i tuoi amici</div>
-        </div>
+    <div class="header">
+        <h1>🎬 Watch Party</h1>
+    </div>
 
-        <!-- Messages -->
-        <div id="errorMessage" class="message error hidden"></div>
-        <div id="successMessage" class="message success hidden"></div>
-        <div id="warningMessage" class="message warning hidden"></div>
+    <div id="main-actions">
+        <button id="create-party" class="button btn-primary">Create Watch Party</button>
+        <button id="join-party" class="button btn-secondary">Join Watch Party</button>
+    </div>
 
-        <!-- Configuration Section -->
-        <div class="config-section">
-            <div class="config-title">⚙️ Configurazione Server</div>
-            <div class="input-group">
-                <label for="graphqlServerUrl">URL Server GraphQL:</label>
-                <input 
-                    type="url" 
-                    id="graphqlServerUrl" 
-                    placeholder="http://localhost:4000/graphql"
-                    autocomplete="off"
-                >
-            </div>
-            <div class="button-group">
-                <button id="saveConfigButton" class="button small">Salva</button>
-                <button id="testConnectionButton" class="button small secondary">Test</button>
-            </div>
-            <div class="connection-status">
-                <div class="status-text">
-                    <div id="configStatusIndicator" class="status-indicator offline"></div>
-                    <span id="configStatusText">Non configurato</span>
-                </div>
-            </div>
-        </div>
+    <div id="join-form" class="hidden">
+        <input type="text" id="room-id-input" placeholder="Enter Room ID" style="width: 100%; padding: 8px; margin: 8px 0; border: 1px solid #333; border-radius: 4px; background: #1f1f1f; color: white;">
+        <button id="join-room-btn" class="button btn-primary">Join Room</button>
+        <button id="back-btn" class="button btn-secondary">Back</button>
+    </div>
 
-        <!-- Status Section -->
-        <div class="status-section">
-            <div class="status-row">
-                <div>
-                    <div class="label">Stato Connessione</div>
-                    <div class="status-text">
-                        <div id="statusIndicator" class="status-indicator offline"></div>
-                        <span id="statusText">Disconnesso</span>
-                    </div>
-                </div>
-                <div>
-                    <div class="label">Utenti Connessi</div>
-                    <div class="value" id="connectedUsers">0</div>
-                </div>
-            </div>
-            
-            <div class="status-row">
-                <div>
-                    <div class="label">Pagina</div>
-                    <div class="value" id="pageType">Caricamento...</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Room Section -->
-        <div class="room-section">
-            <div id="roomDisplay" class="room-id-display hidden">
-                <div class="label">ID Stanza</div>
-                <div class="room-id" id="roomId">XXXXX</div>
-                <div class="share-url" id="shareableUrl"></div>
-            </div>
-            
-            <button id="newRoomButton" class="button">
-                🎬 Crea Nuova Stanza
-            </button>
-            
-            <button id="copyButton" class="button secondary hidden">
-                📋 Copia Link di Condivisione
-            </button>
-        </div>
-
-        <!-- Footer -->
-        <div class="footer">
-            <div>Premi Ctrl+Shift+W per aprire/chiudere la chat</div>
+    <div id="room-info" class="room-info">
+        <h3>Room Created! 🎉</h3>
+        <p>Share this link with your friends:</p>
+        <div id="room-url" class="room-url"></div>
+        <button id="copy-url" class="copy-btn">Copy URL</button>
+        <div class="participants">
+            <span id="participant-count">1</span> participant(s) in room
         </div>
     </div>
 
+    <div id="status" class="status"></div>
+
+    <div id="loading" class="loading hidden">
+        Connecting to room...
+    </div>
+
+    <script src="config.js"></script>
     <script src="popup.js"></script>
 </body>
 </html> 
