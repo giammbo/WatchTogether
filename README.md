@@ -1,268 +1,195 @@
-# WatchTogether - Chrome Extension
+# Netflix Watch Party Chrome Extension
 
-Estensione Chrome per guardare Netflix sincronizzato con amici in tempo reale, con chat integrata.
+A client-side only Chrome extension that enables synchronized Netflix viewing between multiple users through GraphQL (AWS AppSync).
 
-## 🚀 Caratteristiche
+## Features
 
-- **Sincronizzazione video**: Play, pause, seek sincronizzati tra tutti gli utenti
-- **Chat in tempo reale**: Comunicazione istantanea durante la visione
-- **Completamente client-side**: Nessun server di backend richiesto per l'estensione
-- **GraphQL esterno**: Supporto per server GraphQL personalizzati
-- **Fallback offline**: Funziona in modalità locale se GraphQL non è disponibile
-- **UI moderna**: Interfaccia elegante e responsive
+- 🎬 Create or join watch parties with a simple click
+- 🔄 Real-time synchronization of play/pause and seek events
+- 👥 Multiple users can watch the same content simultaneously
+- 🔗 Share watch party links with friends
+- 🚀 No backend required (uses AWS AppSync GraphQL)
+- 💻 Desktop Chrome only
 
-## 📋 Requisiti
+## Installation
 
-- Chrome/Chromium browser
-- Connessione internet per sincronizzazione remota
-- Server GraphQL esterno (opzionale)
+1. Clone this repository or download the source code
+2. Open Chrome and navigate to `chrome://extensions/`
+3. Enable "Developer mode" in the top right
+4. Click "Load unpacked" and select the extension directory
+5. The Netflix Watch Party icon should appear in your Chrome toolbar
 
-## 🛠️ Installazione
+## Configuration
 
-### 1. Scaricare l'estensione
+Before using the extension, you need to configure the GraphQL endpoint:
 
-```bash
-git clone https://github.com/yourusername/netflix-shared-chat.git
-cd netflix-shared-chat
-```
+1. Open `popup.js` and `content.js`
+2. Replace the following values:
+   ```javascript
+   const GRAPHQL_ENDPOINT = 'https://your-appsync-endpoint.appsync-api.us-east-1.amazonaws.com/graphql';
+   const GRAPHQL_API_KEY = 'YOUR_API_KEY_HERE';
+   ```
 
-### 2. Configurare le dipendenze (solo per sviluppo)
+## Usage
 
-```bash
-npm install
-```
+### Creating a Watch Party
 
-### 3. Caricare l'estensione in Chrome
+1. Navigate to Netflix and start playing any movie or TV show
+2. Click the Netflix Watch Party extension icon
+3. Click "Create Watch Party"
+4. A shareable URL will be generated (e.g., `https://watchparty.fake/join?id=ABCD1234`)
+5. Copy and share this URL with friends
 
-1. Apri Chrome e vai a `chrome://extensions/`
-2. Abilita "Modalità sviluppatore" (Developer mode)
-3. Clicca "Carica estensione non compressa" (Load unpacked)
-4. Seleziona la cartella del progetto
-5. L'estensione apparirà nella barra degli strumenti
+### Joining a Watch Party
 
-## ⚙️ Configurazione Server GraphQL
+1. Receive a watch party URL from the host
+2. Navigate to the same Netflix title
+3. Click the extension icon
+4. Click "Join Watch Party"
+5. Paste the URL and click "Join"
+6. Playback will automatically sync with other participants
 
-### Configurazione tramite Popup
+## GraphQL Schema
 
-1. Clicca sull'icona dell'estensione nella barra degli strumenti
-2. Nella sezione "Configurazione Server", inserisci l'URL del tuo server GraphQL
-3. Formato: `http://localhost:4000/graphql` o `https://your-server.com/graphql`
-4. Clicca "Salva" e poi "Test" per verificare la connessione
+The extension expects the following GraphQL operations to be available on your AppSync endpoint:
 
-### Server GraphQL Richiesto
-
-Il server GraphQL deve implementare questo schema:
+### Mutations
 
 ```graphql
-type Query {
-  rooms: [Room!]!
-  room(id: String!): Room
+mutation CreateRoom($roomId: String!, $hostId: String!, $hostName: String!) {
+    createRoom(roomId: $roomId, hostId: $hostId, hostName: $hostName) {
+        roomId
+        hostId
+        createdAt
+    }
 }
 
-type Mutation {
-  joinRoom(roomId: String!, sessionId: String!, userName: String!): User!
-  leaveRoom(roomId: String!, sessionId: String!): Boolean!
-  sendMessage(roomId: String!, sessionId: String!, text: String!): Message!
-  sendPlayerEvent(roomId: String!, sessionId: String!, event: String!, data: String!): PlayerEvent!
+mutation JoinRoom($roomId: String!, $userId: String!, $userName: String!) {
+    joinRoom(roomId: $roomId, userId: $userId, userName: $userName) {
+        roomId
+        users {
+            userId
+            userName
+        }
+    }
 }
 
-type Subscription {
-  chatMessageAdded(roomId: String!): Message!
-  playerEventAdded(roomId: String!): PlayerEvent!
-  roomUpdated(roomId: String!): Room!
+mutation UpdatePlayback($roomId: String!, $userId: String!, $state: String!, $currentTime: Float!, $timestamp: String!) {
+    updatePlayback(roomId: $roomId, userId: $userId, state: $state, currentTime: $currentTime, timestamp: $timestamp) {
+        roomId
+        state
+        currentTime
+    }
 }
 
-type Room {
-  id: String!
-  userCount: Int!
-  users: [User!]!
-}
-
-type User {
-  id: String!
-  sessionId: String!
-  userName: String!
-  joinedAt: String!
-}
-
-type Message {
-  id: String!
-  text: String!
-  sender: String!
-  timestamp: String!
-}
-
-type PlayerEvent {
-  id: String!
-  event: String!
-  data: String!
-  sessionId: String!
-  timestamp: String!
+mutation LeaveRoom($roomId: String!, $userId: String!) {
+    leaveRoom(roomId: $roomId, userId: $userId) {
+        success
+    }
 }
 ```
 
-### Server di Esempio
+### Queries
 
-Puoi utilizzare il server GraphQL incluso per testing:
-
-```bash
-node graphql-server.js
+```graphql
+query GetRoomState($roomId: String!) {
+    getRoomState(roomId: $roomId) {
+        state
+        currentTime
+        lastUpdateUserId
+        timestamp
+    }
+}
 ```
 
-Il server sarà disponibile su `http://localhost:4000/graphql`
+### Subscriptions
 
-## 🎬 Come Utilizzare
-
-### 1. Aprire Netflix
-
-Vai su [Netflix](https://netflix.com) e scegli un video da guardare.
-
-### 2. Aprire l'estensione
-
-- Clicca sull'icona WatchTogether nella barra degli strumenti
-- Oppure usa la scorciatoia `Ctrl+Shift+W` per aprire/chiudere la sidebar
-
-### 3. Creare o Unirsi a una Stanza
-
-**Creare una nuova stanza:**
-1. Clicca "Crea Nuova Stanza" nel popup
-2. Condividi l'ID stanza o il link con i tuoi amici
-
-**Unirsi a una stanza:**
-1. I tuoi amici possono inserire l'ID stanza nella sidebar
-2. Oppure utilizzare il link diretto: `https://netflix.com#room=ABCDE`
-
-### 4. Guardare Insieme
-
-- Tutti i controlli video (play, pause, seek) sono sincronizzati automaticamente
-- Usa la chat per comunicare durante la visione
-- Gli utenti connessi sono visibili nella sidebar
-
-## 🔧 Modalità Funzionamento
-
-### Con Server GraphQL (Raccomandato)
-
-- Sincronizzazione in tempo reale tra dispositivi diversi
-- Chat globale tra tutti gli utenti
-- Funziona tra città/paesi diversi
-- Gestione avanzata degli utenti
-
-### Modalità Fallback (LocalStorage)
-
-- Funziona solo su stesso browser/dispositivo
-- Sincronizzazione locale tra tab
-- Chat salvata localmente
-- Backup automatico quando GraphQL non è disponibile
-
-## 📁 Struttura del Progetto
-
-```
-netflix-shared-chat/
-├── manifest.json              # Configurazione estensione Chrome
-├── content.js                 # Script principale dell'estensione
-├── background.js              # Service worker dell'estensione
-├── popup.html/js              # Popup di configurazione
-├── sidebar.html/css/js        # Interfaccia chat laterale
-├── graphql-client-bundle.js   # Client GraphQL bundled
-├── graphql-server.js          # Server GraphQL di esempio
-├── test-graphql.html          # Pagina di test GraphQL
-└── icons/                     # Icone dell'estensione
+```graphql
+subscription OnPlaybackUpdated($roomId: String!) {
+    onPlaybackUpdated(roomId: $roomId) {
+        roomId
+        userId
+        state
+        currentTime
+        timestamp
+    }
+}
 ```
 
-## 🔍 Debugging
+## Technical Details
 
-### 1. Console Browser
+### Architecture
 
-Apri gli strumenti di sviluppo di Chrome (`F12`) e controlla i log:
+- **Manifest V3**: Uses the latest Chrome extension manifest format
+- **Content Script**: Injects into Netflix pages to control video playback
+- **Popup**: Provides UI for creating/joining rooms
+- **GraphQL**: Uses AWS AppSync for real-time synchronization
+- **Storage**: Uses Chrome storage API for persisting user state
 
-```javascript
-// Log dell'estensione iniziano con:
-[WatchTogether] ...
-[GraphQL] ...
+### File Structure
+
+```
+netflix-watch-party/
+├── manifest.json       # Extension manifest
+├── popup.html         # Popup UI
+├── popup.js          # Popup logic and GraphQL calls
+├── content.js        # Netflix page integration
+├── inject.js         # Optional injected script for deeper integration
+├── icons/            # Extension icons
+└── README.md         # This file
 ```
 
-### 2. Pagina di Test
+### Synchronization Logic
 
-Apri `test-graphql.html` nel browser per testare direttamente il client GraphQL.
+1. When a user performs an action (play/pause/seek), the content script detects it
+2. The action is sent to AppSync via GraphQL mutation
+3. Other clients poll for updates (or use subscriptions if WebSocket is available)
+4. Remote updates are applied to the local video element
+5. A flag prevents feedback loops during synchronization
 
-### 3. Stato dell'Estensione
+## Limitations
 
-Il popup mostra sempre lo stato corrente:
-- **Configurazione Server**: URL e stato connessione GraphQL
-- **Stato Connessione**: Online/Offline/Errore
-- **Utenti Connessi**: Numero di partecipanti
-- **ID Stanza**: Stanza corrente
+- Works only on desktop Chrome (no mobile support)
+- Requires all participants to have access to the same Netflix content
+- Polling is used as a fallback if WebSocket subscriptions aren't available
+- Users must manually navigate to the same title before joining
 
-## ⚠️ Risoluzione Problemi
+## Troubleshooting
 
-### Estensione non carica
+### Extension not working on Netflix
 
-1. Verifica che la "Modalità sviluppatore" sia abilitata in `chrome://extensions/`
-2. Ricarica l'estensione cliccando sul pulsante di refresh
-3. Controlla la console per errori
+- Make sure you're on a video page (not browsing)
+- Refresh the Netflix page after installing the extension
+- Check that the extension has permissions for netflix.com
 
-### GraphQL non si connette
+### Synchronization issues
 
-1. Verifica che l'URL del server sia corretto
-2. Assicurati che il server sia in esecuzione
-3. Controlla i CORS sul server GraphQL
-4. Usa il pulsante "Test" nel popup per diagnosticare
+- Ensure all participants are on the same Netflix title
+- Check that your AppSync endpoint is correctly configured
+- Verify CORS is enabled on your AppSync API
+- Look for errors in the browser console (F12)
 
-### Video non sincronizzati
+### Connection errors
 
-1. Verifica che tutti gli utenti siano connessi alla stessa stanza
-2. Controlla che il server GraphQL funzioni correttamente
-3. In caso di problemi, l'estensione userà automaticamente il fallback localStorage
+- Verify your GraphQL endpoint URL and API key
+- Check network connectivity
+- Ensure AppSync is configured to accept requests from Chrome extensions
 
-### Chat non funziona
+## Development
 
-1. Verifica la connessione WebSocket al server GraphQL
-2. Controlla che le subscription siano supportate dal server
-3. In modalità fallback, la chat funziona solo localmente
+### Testing Locally
 
-## 🔐 Privacy e Sicurezza
+1. Make changes to the source files
+2. Go to `chrome://extensions/`
+3. Click the refresh button on the extension card
+4. Test your changes on Netflix
 
-- **Nessun dato personale**: L'estensione non raccoglie informazioni personali
-- **Solo Netflix**: Funziona esclusivamente su netflix.com
-- **Dati temporanei**: Chat e sessioni sono temporanee
-- **Server opzionale**: Funziona anche senza server esterno
+### Debugging
 
-## 🚀 Sviluppo Avanzato
+- Use Chrome DevTools to debug popup: Right-click the extension icon > Inspect popup
+- Use Chrome DevTools on Netflix page to debug content script: F12
+- Check background console: chrome://extensions/ > Details > Inspect views
 
-### Personalizzare il Client GraphQL
+## License
 
-Il file `graphql-client-bundle.js` può essere modificato per:
-- Aggiungere nuove query/mutation
-- Personalizzare la gestione errori
-- Implementare retry logic
-- Aggiungere autenticazione
-
-### Estendere le Funzionalità
-
-Puoi modificare:
-- `content.js`: Logica principale e sincronizzazione
-- `sidebar.js`: Interfaccia chat e utenti
-- `popup.js`: Configurazione e stato
-- `background.js`: Service worker e notifiche
-
-## 📄 Licenza
-
-MIT License - vedi [LICENSE](LICENSE) per dettagli.
-
-## 🤝 Contribuire
-
-1. Fork del progetto
-2. Crea un branch per la feature (`git checkout -b feature/nuova-feature`)
-3. Commit delle modifiche (`git commit -am 'Aggiungi nuova feature'`)
-4. Push del branch (`git push origin feature/nuova-feature`)
-5. Apri una Pull Request
-
-## 📞 Supporto
-
-- **Issues**: Apri un issue su GitHub per bug o richieste di feature
-- **Discussions**: Usa le discussioni per domande generali
-- **Wiki**: Consulta la wiki per documentazione avanzata
-
----
-
-**Nota**: Questa estensione è completamente client-side e non richiede installazione di server per funzionare. Il server GraphQL è opzionale e può essere ospitato ovunque tu preferisca. 
+This extension is provided as-is for educational purposes. Make sure you comply with Netflix's terms of service when using this extension. 

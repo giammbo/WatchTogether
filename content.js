@@ -1,759 +1,367 @@
-// WatchTogether Content Script
-// Integrates GraphQL for remote synchronization
+// Content script for Netflix Watch Party
+console.log('Netflix Watch Party content script loaded');
 
-(function() {
-    'use strict';
+// GraphQL configuration - should match popup.js
+const GRAPHQL_ENDPOINT = 'https://your-appsync-endpoint.appsync-api.us-east-1.amazonaws.com/graphql';
+const GRAPHQL_API_KEY = 'YOUR_API_KEY_HERE';
 
-    // Configuration
-    const CONFIG = {
-        SIDEBAR_WIDTH: 350,
-        SIDEBAR_Z_INDEX: 9999,
-        POLLING_INTERVAL: 1000,
-        PLAYER_SYNC_INTERVAL: 500,
-        CHAT_POLLING_INTERVAL: 1000
-    };
+// State management
+let watchPartyState = {
+    roomId: null,
+    userId: null,
+    isHost: false,
+    connected: false,
+    subscription: null,
+    lastUpdateTime: 0,
+    isSyncing: false,
+    videoElement: null,
+    reconnectAttempts: 0
+};
 
-    // Global state
-    let currentRoomId = null;
-    let currentSessionId = null;
-    let sidebar = null;
-    let sidebarIframe = null;
-    let isSidebarOpen = false;
-    let graphqlManager = null;
-    let isGraphQLEnabled = false;
-    let lastPlayerEvent = null;
-    let isRemoteEvent = false;
-    let chatMessages = [];
-    let playerEvents = [];
-    let users = [];
-    let connectionStatus = 'disconnected';
+// GraphQL helper
+async function graphqlRequest(query, variables) {
+    try {
+        const response = await fetch(GRAPHQL_ENDPOINT, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': GRAPHQL_API_KEY
+            },
+            body: JSON.stringify({
+                query,
+                variables
+            })
+        });
 
-    // Initialize GraphQL manager
-    function initializeGraphQL() {
-        try {
-            console.log('[WatchTogether] Initializing GraphQL manager...');
-            
-            // Load GraphQL client from bundled file
-            const script = document.createElement('script');
-            script.src = chrome.runtime.getURL('graphql-client-bundle.js');
-            script.onload = () => {
-                if (window.GraphQLManager) {
-                    // GraphQL manager will get server URL from extension storage
-                    graphqlManager = new window.GraphQLManager();
-                    
-                    // Set up callbacks
-                    graphqlManager.setCallbacks({
-                        onPlayerEvent: handleRemotePlayerEvent,
-                        onChatMessage: handleRemoteChatMessage,
-                        onUserJoined: handleUserJoined,
-                        onUserLeft: handleUserLeft,
-                        onRoomUpdated: handleRoomUpdated,
-                        onConnectionStateChange: handleConnectionStateChange
-                    });
-                    
-                    console.log('[WatchTogether] GraphQL manager initialized');
-                    isGraphQLEnabled = true;
-                    
-                    // Try to connect if we have a room ID
-                    if (currentRoomId) {
-                        connectToGraphQLRoom();
-                    }
-                } else {
-                    console.error('[WatchTogether] GraphQLManager not found');
-                    // Fall back to localStorage mode
-                    console.log('[WatchTogether] Falling back to localStorage mode');
-                }
-            };
-            script.onerror = () => {
-                console.error('[WatchTogether] Failed to load GraphQL client');
-            };
-            document.head.appendChild(script);
-            
-        } catch (error) {
-            console.error('[WatchTogether] Failed to initialize GraphQL:', error);
+        const data = await response.json();
+        if (data.errors) {
+            throw new Error(data.errors[0].message);
         }
+        return data.data;
+    } catch (error) {
+        console.error('GraphQL request failed:', error);
+        throw error;
+    }
+}
+
+// GraphQL subscription implementation using Server-Sent Events (SSE)
+function subscribeToPlaybackUpdates() {
+    if (watchPartyState.subscription) {
+        watchPartyState.subscription.close();
     }
 
-    // Connect to GraphQL room
-    async function connectToGraphQLRoom() {
-        if (!graphqlManager || !currentRoomId || !currentSessionId) {
-            return;
-        }
-        
-        try {
-            console.log(`[WatchTogether] Connecting to GraphQL room: ${currentRoomId}`);
-            
-            // Initialize GraphQL client
-            await graphqlManager.initialize();
-            
-            // Join room
-            const user = await graphqlManager.joinRoom(currentRoomId, currentSessionId, 'User');
-            
-            console.log('[WatchTogether] Connected to GraphQL room:', user);
-            
-            // Update sidebar with connection status
-            updateSidebarConnectionStatus('connected');
-            
-            // Get initial room info
-            await updateRoomInfoFromGraphQL();
-            
-        } catch (error) {
-            console.error('[WatchTogether] Failed to connect to GraphQL room:', error);
-            updateSidebarConnectionStatus('error');
-        }
-    }
+    console.log('Subscribing to playback updates for room:', watchPartyState.roomId);
 
-    // Handle remote player event
-    function handleRemotePlayerEvent(event) {
-        console.log('[WatchTogether] Remote player event received:', event);
-        
-        isRemoteEvent = true;
-        
-        // Apply player event
-        const video = getNetflixVideo();
-        if (video) {
-            switch (event.action) {
-                case 'play':
-                    video.play();
-                    break;
-                case 'pause':
-                    video.pause();
-                    break;
-                case 'seek':
-                    video.currentTime = event.currentTime;
-                    break;
+    // For AppSync, we'll use WebSocket subscription
+    const subscriptionQuery = `
+        subscription OnPlaybackUpdated($roomId: String!) {
+            onPlaybackUpdated(roomId: $roomId) {
+                roomId
+                userId
+                state
+                currentTime
+                timestamp
             }
         }
-        
-        // Update sidebar
-        updateSidebarPlayerEvent(event);
-        
-        // Reset flag after a short delay
+    `;
+
+    // Since we can't use Apollo Client, we'll implement a polling mechanism
+    // In a real implementation, you'd use AppSync's WebSocket endpoint
+    startPlaybackPolling();
+}
+
+// Polling mechanism (fallback for WebSocket)
+let pollingInterval = null;
+
+function startPlaybackPolling() {
+    if (pollingInterval) clearInterval(pollingInterval);
+    
+    pollingInterval = setInterval(async () => {
+        if (!watchPartyState.connected || !watchPartyState.roomId) {
+            stopPlaybackPolling();
+            return;
+        }
+
+        try {
+            // Query for latest playback state
+            const query = `
+                query GetRoomState($roomId: String!) {
+                    getRoomState(roomId: $roomId) {
+                        state
+                        currentTime
+                        lastUpdateUserId
+                        timestamp
+                    }
+                }
+            `;
+
+            const data = await graphqlRequest(query, { roomId: watchPartyState.roomId });
+            
+            if (data.getRoomState && data.getRoomState.lastUpdateUserId !== watchPartyState.userId) {
+                handleRemotePlaybackUpdate(data.getRoomState);
+            }
+        } catch (error) {
+            console.error('Polling error:', error);
+        }
+    }, 1000); // Poll every second
+}
+
+function stopPlaybackPolling() {
+    if (pollingInterval) {
+        clearInterval(pollingInterval);
+        pollingInterval = null;
+    }
+}
+
+// Find and monitor Netflix video element
+function findVideoElement() {
+    const video = document.querySelector('video');
+    if (video && video !== watchPartyState.videoElement) {
+        console.log('Netflix video element found');
+        watchPartyState.videoElement = video;
+        attachVideoListeners();
+    }
+    return video;
+}
+
+// Attach event listeners to video element
+function attachVideoListeners() {
+    if (!watchPartyState.videoElement) return;
+
+    // Remove existing listeners
+    ['play', 'pause', 'seeked'].forEach(event => {
+        watchPartyState.videoElement.removeEventListener(event, handleVideoEvent);
+    });
+
+    // Add new listeners
+    ['play', 'pause', 'seeked'].forEach(event => {
+        watchPartyState.videoElement.addEventListener(event, handleVideoEvent);
+    });
+
+    console.log('Video event listeners attached');
+}
+
+// Handle video events
+function handleVideoEvent(event) {
+    if (!watchPartyState.connected || watchPartyState.isSyncing) return;
+
+    const video = event.target;
+    const currentTime = video.currentTime;
+    const state = video.paused ? 'paused' : 'playing';
+
+    console.log(`Video event: ${event.type}, state: ${state}, time: ${currentTime}`);
+
+    // Throttle updates
+    const now = Date.now();
+    if (now - watchPartyState.lastUpdateTime < 500) return;
+    watchPartyState.lastUpdateTime = now;
+
+    // Send update to other users
+    sendPlaybackUpdate(state, currentTime);
+}
+
+// Send playback update via GraphQL
+async function sendPlaybackUpdate(state, currentTime) {
+    if (!watchPartyState.roomId || !watchPartyState.userId) return;
+
+    try {
+        const mutation = `
+            mutation UpdatePlayback($roomId: String!, $userId: String!, $state: String!, $currentTime: Float!, $timestamp: String!) {
+                updatePlayback(roomId: $roomId, userId: $userId, state: $state, currentTime: $currentTime, timestamp: $timestamp) {
+                    roomId
+                    state
+                    currentTime
+                }
+            }
+        `;
+
+        await graphqlRequest(mutation, {
+            roomId: watchPartyState.roomId,
+            userId: watchPartyState.userId,
+            state: state,
+            currentTime: currentTime,
+            timestamp: new Date().toISOString()
+        });
+
+        console.log('Playback update sent:', { state, currentTime });
+    } catch (error) {
+        console.error('Failed to send playback update:', error);
+    }
+}
+
+// Handle remote playback updates
+function handleRemotePlaybackUpdate(update) {
+    if (!watchPartyState.videoElement || watchPartyState.isSyncing) return;
+
+    console.log('Received remote playback update:', update);
+
+    watchPartyState.isSyncing = true;
+
+    try {
+        const video = watchPartyState.videoElement;
+        const timeDiff = Math.abs(video.currentTime - update.currentTime);
+
+        // Sync time if difference is significant
+        if (timeDiff > 1) {
+            video.currentTime = update.currentTime;
+        }
+
+        // Sync play/pause state
+        if (update.state === 'playing' && video.paused) {
+            video.play().catch(err => console.error('Play failed:', err));
+        } else if (update.state === 'paused' && !video.paused) {
+            video.pause();
+        }
+    } catch (error) {
+        console.error('Error applying remote update:', error);
+    } finally {
         setTimeout(() => {
-            isRemoteEvent = false;
-        }, 100);
-    }
-
-    // Handle remote chat message
-    function handleRemoteChatMessage(message) {
-        console.log('[WatchTogether] Remote chat message received:', message);
-        
-        chatMessages.push({
-            id: message.id,
-            text: message.text,
-            sender: message.sender,
-            timestamp: new Date(message.timestamp),
-            isLocal: false
-        });
-        
-        // Update sidebar
-        updateSidebarChat(message);
-    }
-
-    // Handle user joined
-    function handleUserJoined(user) {
-        console.log('[WatchTogether] User joined:', user);
-        
-        users.push(user);
-        updateSidebarUsers();
-    }
-
-    // Handle user left
-    function handleUserLeft(user) {
-        console.log('[WatchTogether] User left:', user);
-        
-        users = users.filter(u => u.sessionId !== user.sessionId);
-        updateSidebarUsers();
-    }
-
-    // Handle room updated
-    function handleRoomUpdated(room) {
-        console.log('[WatchTogether] Room updated:', room);
-        
-        users = room.users || [];
-        updateSidebarUsers();
-    }
-
-    // Handle connection state change
-    function handleConnectionStateChange(state) {
-        console.log('[WatchTogether] Connection state changed:', state);
-        
-        connectionStatus = state;
-        updateSidebarConnectionStatus(state);
-    }
-
-    // Update room info from GraphQL
-    async function updateRoomInfoFromGraphQL() {
-        if (!graphqlManager || !currentRoomId) {
-            return;
-        }
-        
-        try {
-            const roomInfo = await graphqlManager.getRoomInfo();
-            
-            users = roomInfo.users || [];
-            chatMessages = roomInfo.messages || [];
-            playerEvents = roomInfo.playerEvents || [];
-            
-            updateSidebarUsers();
-            updateSidebarChat();
-            
-        } catch (error) {
-            console.error('[WatchTogether] Failed to get room info:', error);
-        }
-    }
-
-    // Send player event via GraphQL
-    async function sendPlayerEventViaGraphQL(action, currentTime) {
-        if (!graphqlManager || !currentRoomId || isRemoteEvent) {
-            return;
-        }
-        
-        try {
-            await graphqlManager.sendPlayerEvent(action, currentTime);
-            console.log(`[WatchTogether] Player event sent via GraphQL: ${action}`);
-        } catch (error) {
-            console.error('[WatchTogether] Failed to send player event via GraphQL:', error);
-        }
-    }
-
-    // Send chat message via GraphQL
-    async function sendChatMessageViaGraphQL(text, sender) {
-        if (!graphqlManager || !currentRoomId) {
-            return;
-        }
-        
-        try {
-            const message = await graphqlManager.sendChatMessage(text, sender);
-            console.log('[WatchTogether] Chat message sent via GraphQL:', message);
-            
-            // Add to local messages
-            chatMessages.push({
-                id: message.id,
-                text: message.text,
-                sender: message.sender,
-                timestamp: new Date(message.timestamp),
-                isLocal: true
-            });
-            
-        } catch (error) {
-            console.error('[WatchTogether] Failed to send chat message via GraphQL:', error);
-        }
-    }
-
-    // Update sidebar connection status
-    function updateSidebarConnectionStatus(status) {
-        if (sidebarIframe && sidebarIframe.contentWindow) {
-            sidebarIframe.contentWindow.postMessage({
-                type: 'connectionStatus',
-                status: status
-            }, '*');
-        }
-    }
-
-    // Update sidebar users
-    function updateSidebarUsers() {
-        if (sidebarIframe && sidebarIframe.contentWindow) {
-            sidebarIframe.contentWindow.postMessage({
-                type: 'usersUpdate',
-                users: users
-            }, '*');
-        }
-    }
-
-    // Update sidebar chat
-    function updateSidebarChat(message = null) {
-        if (sidebarIframe && sidebarIframe.contentWindow) {
-            sidebarIframe.contentWindow.postMessage({
-                type: 'chatUpdate',
-                messages: chatMessages,
-                newMessage: message
-            }, '*');
-        }
-    }
-
-    // Update sidebar player event
-    function updateSidebarPlayerEvent(event) {
-        if (sidebarIframe && sidebarIframe.contentWindow) {
-            sidebarIframe.contentWindow.postMessage({
-                type: 'playerEvent',
-                event: event
-            }, '*');
-        }
-    }
-
-    // Initialize the extension
-    function initialize() {
-        console.log('[WatchTogether] Content script starting...');
-        
-        // Generate session ID
-        currentSessionId = 'session_' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-        
-        // Extract room ID from URL
-        extractRoomIdFromURL();
-        
-        // Initialize GraphQL
-        initializeGraphQL();
-        
-        // Create sidebar
-        createSidebar();
-        
-        // Set up player sync
-        setupPlayerSync();
-        
-        // Set up message listener
-        setupMessageListener();
-        
-        // Set up URL change listener
-        setupURLChangeListener();
-        
-        console.log('[WatchTogether] Content script initialized');
-        console.log(`[WatchTogether] Room ID: ${currentRoomId} Session ID: ${currentSessionId}`);
-    }
-
-    // Extract room ID from URL
-    function extractRoomIdFromURL() {
-        const hash = window.location.hash;
-        const roomMatch = hash.match(/#room=([A-Z0-9]+)/);
-        
-        if (roomMatch) {
-            currentRoomId = roomMatch[1];
-            console.log(`[WatchTogether] Room ID extracted from URL: ${currentRoomId}`);
-        } else {
-            // Generate new room ID if none exists
-            currentRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
-            console.log(`[WatchTogether] New room ID generated: ${currentRoomId}`);
-        }
-    }
-
-    // Create sidebar
-    function createSidebar() {
-        // Remove existing sidebar if any
-        const existingSidebar = document.getElementById('watchtogether-sidebar');
-        if (existingSidebar) {
-            existingSidebar.remove();
-        }
-
-        // Create sidebar container
-        sidebar = document.createElement('div');
-        sidebar.id = 'watchtogether-sidebar';
-        sidebar.style.cssText = `
-            position: fixed;
-            top: 0;
-            right: -${CONFIG.SIDEBAR_WIDTH}px;
-            width: ${CONFIG.SIDEBAR_WIDTH}px;
-            height: 100vh;
-            background: #141414;
-            border-left: 1px solid #333;
-            z-index: ${CONFIG.SIDEBAR_Z_INDEX};
-            transition: right 0.3s ease;
-            font-family: 'Netflix Sans', Arial, sans-serif;
-            color: white;
-        `;
-
-        // Create iframe for sidebar content
-        sidebarIframe = document.createElement('iframe');
-        sidebarIframe.src = chrome.runtime.getURL('sidebar.html');
-        sidebarIframe.style.cssText = `
-            width: 100%;
-            height: 100%;
-            border: none;
-            background: #141414;
-        `;
-
-        sidebar.appendChild(sidebarIframe);
-        document.body.appendChild(sidebar);
-
-        console.log('[WatchTogether] Sidebar elements created');
-    }
-
-    // Toggle sidebar
-    function toggleSidebar() {
-        if (!sidebar) return;
-
-        isSidebarOpen = !isSidebarOpen;
-        
-        if (isSidebarOpen) {
-            sidebar.style.right = '0px';
-            console.log('[WatchTogether] Sidebar opened');
-        } else {
-            sidebar.style.right = `-${CONFIG.SIDEBAR_WIDTH}px`;
-            console.log('[WatchTogether] Sidebar closed');
-        }
-    }
-
-    // Get Netflix video element
-    function getNetflixVideo() {
-        return document.querySelector('video');
-    }
-
-    // Setup player synchronization
-    function setupPlayerSync() {
-        const video = getNetflixVideo();
-        if (!video) {
-            console.log('[WatchTogether] No video element found, retrying...');
-            setTimeout(setupPlayerSync, 1000);
-            return;
-        }
-
-        console.log('[WatchTogether] Setting up player sync for room:', currentRoomId);
-
-        // Listen for player events
-        video.addEventListener('play', () => {
-            if (!isRemoteEvent) {
-                const event = {
-                    action: 'play',
-                    currentTime: video.currentTime,
-                    timestamp: new Date().toISOString()
-                };
-                
-                // Send via GraphQL if available
-                if (isGraphQLEnabled && graphqlManager) {
-                    sendPlayerEventViaGraphQL('play', video.currentTime);
-                } else {
-                    // Fallback to localStorage
-                    broadcastPlayerEvent(event);
-                }
-                
-                console.log('[WatchTogether] Play event broadcasted');
-            }
-        });
-
-        video.addEventListener('pause', () => {
-            if (!isRemoteEvent) {
-                const event = {
-                    action: 'pause',
-                    currentTime: video.currentTime,
-                    timestamp: new Date().toISOString()
-                };
-                
-                // Send via GraphQL if available
-                if (isGraphQLEnabled && graphqlManager) {
-                    sendPlayerEventViaGraphQL('pause', video.currentTime);
-                } else {
-                    // Fallback to localStorage
-                    broadcastPlayerEvent(event);
-                }
-                
-                console.log('[WatchTogether] Pause event broadcasted');
-            }
-        });
-
-        video.addEventListener('seeked', () => {
-            if (!isRemoteEvent) {
-                const event = {
-                    action: 'seek',
-                    currentTime: video.currentTime,
-                    timestamp: new Date().toISOString()
-                };
-                
-                // Send via GraphQL if available
-                if (isGraphQLEnabled && graphqlManager) {
-                    sendPlayerEventViaGraphQL('seek', video.currentTime);
-                } else {
-                    // Fallback to localStorage
-                    broadcastPlayerEvent(event);
-                }
-                
-                console.log('[WatchTogether] Seek event broadcasted');
-            }
-        });
-
-        // Poll for remote events (fallback for localStorage)
-        if (!isGraphQLEnabled) {
-            setInterval(() => {
-                pollForPlayerEvents();
-            }, CONFIG.PLAYER_SYNC_INTERVAL);
-        }
-    }
-
-    // Broadcast player event (localStorage fallback)
-    function broadcastPlayerEvent(event) {
-        const eventData = {
-            ...event,
-            roomId: currentRoomId,
-            sessionId: currentSessionId
-        };
-        
-        localStorage.setItem(`watchtogether_player_${currentRoomId}`, JSON.stringify(eventData));
-        sessionStorage.setItem(`watchtogether_player_${currentRoomId}`, JSON.stringify(eventData));
-    }
-
-    // Poll for player events (localStorage fallback)
-    function pollForPlayerEvents() {
-        const eventData = localStorage.getItem(`watchtogether_player_${currentRoomId}`);
-        if (eventData) {
-            const event = JSON.parse(eventData);
-            
-            if (event.sessionId !== currentSessionId && event.timestamp !== lastPlayerEvent?.timestamp) {
-                lastPlayerEvent = event;
-                handleRemotePlayerEvent(event);
-            }
-        }
-    }
-
-    // Setup message listener
-    function setupMessageListener() {
-        window.addEventListener('message', (event) => {
-            if (event.source !== sidebarIframe?.contentWindow) return;
-
-            const { type, data } = event.data;
-
-            switch (type) {
-                case 'sendChatMessage':
-                    if (isGraphQLEnabled && graphqlManager) {
-                        sendChatMessageViaGraphQL(data.text, data.sender);
-                    } else {
-                        // Fallback to localStorage
-                        sendChatMessage(data.text, data.sender);
-                    }
-                    break;
-                    
-                case 'toggleSidebar':
-                    toggleSidebar();
-                    break;
-                    
-                case 'getRoomInfo':
-                    const roomInfo = {
-                        roomId: currentRoomId,
-                        sessionId: currentSessionId,
-                        users: users,
-                        messages: chatMessages,
-                        connectionStatus: connectionStatus
-                    };
-                    sidebarIframe.contentWindow.postMessage({
-                        type: 'roomInfo',
-                        data: roomInfo
-                    }, '*');
-                    break;
-                    
-                case 'createRoom':
-                    createNewRoom();
-                    break;
-                    
-                case 'joinRoom':
-                    joinRoom(data.roomId);
-                    break;
-            }
-        });
-    }
-
-    // Setup URL change listener
-    function setupURLChangeListener() {
-        let currentURL = window.location.href;
-        
-        setInterval(() => {
-            if (window.location.href !== currentURL) {
-                currentURL = window.location.href;
-                console.log('[WatchTogether] URL changed, checking for room ID...');
-                
-                const oldRoomId = currentRoomId;
-                extractRoomIdFromURL();
-                
-                if (currentRoomId !== oldRoomId) {
-                    console.log(`[WatchTogether] Room ID changed from ${oldRoomId} to ${currentRoomId}`);
-                    
-                    // Leave old room if connected to GraphQL
-                    if (isGraphQLEnabled && graphqlManager && oldRoomId) {
-                        graphqlManager.leaveRoom();
-                    }
-                    
-                    // Connect to new room
-                    if (isGraphQLEnabled && graphqlManager && currentRoomId) {
-                        connectToGraphQLRoom();
-                    }
-                    
-                    // Reload sidebar
-                    if (sidebarIframe) {
-                        sidebarIframe.src = sidebarIframe.src;
-                    }
-                    
-                    // Clear local data
-                    chatMessages = [];
-                    users = [];
-                    playerEvents = [];
-                }
-            }
+            watchPartyState.isSyncing = false;
         }, 1000);
     }
+}
 
-    // Create new room
-    function createNewRoom() {
-        currentRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
-        
-        // Update URL
-        const url = new URL(window.location);
-        url.hash = `room=${currentRoomId}`;
-        window.history.replaceState({}, '', url);
-        
-        console.log(`[WatchTogether] New room created: ${currentRoomId}`);
-        
-        // Connect to GraphQL if available
-        if (isGraphQLEnabled && graphqlManager) {
-            connectToGraphQLRoom();
-        }
-        
-        // Update sidebar
-        if (sidebarIframe && sidebarIframe.contentWindow) {
-            sidebarIframe.contentWindow.postMessage({
-                type: 'roomCreated',
-                roomId: currentRoomId
-            }, '*');
-        }
+// Check for room ID in URL
+function checkForRoomInUrl() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const hash = window.location.hash;
+    
+    // Check URL parameters
+    if (urlParams.has('watchparty')) {
+        return urlParams.get('watchparty');
     }
-
-    // Join room
-    function joinRoom(roomId) {
-        currentRoomId = roomId;
-        
-        // Update URL
-        const url = new URL(window.location);
-        url.hash = `room=${currentRoomId}`;
-        window.history.replaceState({}, '', url);
-        
-        console.log(`[WatchTogether] Joined room: ${currentRoomId}`);
-        
-        // Connect to GraphQL if available
-        if (isGraphQLEnabled && graphqlManager) {
-            connectToGraphQLRoom();
-        }
-        
-        // Update sidebar
-        if (sidebarIframe && sidebarIframe.contentWindow) {
-            sidebarIframe.contentWindow.postMessage({
-                type: 'roomJoined',
-                roomId: currentRoomId
-            }, '*');
-        }
+    
+    // Check hash
+    if (hash && hash.includes('room=')) {
+        const match = hash.match(/room=([A-Z0-9]+)/i);
+        if (match) return match[1];
     }
+    
+    return null;
+}
 
-    // Send chat message (localStorage fallback)
-    function sendChatMessage(text, sender) {
-        const message = {
-            id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9),
-            text: text,
-            sender: sender,
-            timestamp: new Date().toISOString(),
-            roomId: currentRoomId,
-            sessionId: currentSessionId
-        };
-        
-        // Store in localStorage
-        const messages = JSON.parse(localStorage.getItem(`watchtogether_chat_${currentRoomId}`) || '[]');
-        messages.push(message);
-        
-        // Keep only last 50 messages
-        if (messages.length > 50) {
-            messages.splice(0, messages.length - 50);
-        }
-        
-        localStorage.setItem(`watchtogether_chat_${currentRoomId}`, JSON.stringify(messages));
-        
-        // Add to local array
-        chatMessages.push({
-            id: message.id,
-            text: message.text,
-            sender: message.sender,
-            timestamp: new Date(message.timestamp),
-            isLocal: true
+// Initialize watch party
+async function initializeWatchParty(roomId, userId, isHost) {
+    console.log('Initializing watch party:', { roomId, userId, isHost });
+    
+    watchPartyState.roomId = roomId;
+    watchPartyState.userId = userId;
+    watchPartyState.isHost = isHost;
+    watchPartyState.connected = true;
+    
+    // Find video element
+    findVideoElement();
+    
+    // Start monitoring for video element changes
+    const observer = new MutationObserver(() => {
+        findVideoElement();
+    });
+    
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true
+    });
+    
+    // Subscribe to updates
+    subscribeToPlaybackUpdates();
+    
+    // Notify popup of connection status
+    chrome.runtime.sendMessage({
+        type: 'CONNECTION_STATUS',
+        connected: true
+    });
+}
+
+// Leave watch party
+function leaveWatchParty() {
+    console.log('Leaving watch party');
+    
+    // Stop polling
+    stopPlaybackPolling();
+    
+    // Remove video listeners
+    if (watchPartyState.videoElement) {
+        ['play', 'pause', 'seeked'].forEach(event => {
+            watchPartyState.videoElement.removeEventListener(event, handleVideoEvent);
         });
-        
-        console.log('[WatchTogether] Chat message sent:', message);
     }
-
-    // Keyboard shortcut to toggle sidebar
-    document.addEventListener('keydown', (event) => {
-        if (event.ctrlKey && event.shiftKey && event.key === 'W') {
-            event.preventDefault();
-            toggleSidebar();
-        }
+    
+    // Reset state
+    watchPartyState = {
+        roomId: null,
+        userId: null,
+        isHost: false,
+        connected: false,
+        subscription: null,
+        lastUpdateTime: 0,
+        isSyncing: false,
+        videoElement: null,
+        reconnectAttempts: 0
+    };
+    
+    // Notify popup
+    chrome.runtime.sendMessage({
+        type: 'CONNECTION_STATUS',
+        connected: false
     });
+}
 
-    // Chrome extension message listener for popup communication
-    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-        console.log('[WatchTogether] Received message from popup:', request);
-        
-        switch (request.action) {
-            case 'GET_ROOM_INFO':
-                sendResponse({
-                    success: true,
-                    roomId: currentRoomId,
-                    status: connectionStatus,
-                    userCount: users.length,
-                    isGraphQLEnabled: isGraphQLEnabled
-                });
-                break;
-                
-            case 'CREATE_ROOM':
-                const roomId = generateRoomId();
-                createRoom(roomId);
-                sendResponse({
-                    success: true,
-                    roomId: roomId
-                });
-                break;
-                
-            case 'UPDATE_GRAPHQL_CONFIG':
-                if (request.serverUrl && graphqlManager) {
-                    console.log('[WatchTogether] Updating GraphQL server URL:', request.serverUrl);
-                    graphqlManager.serverUrl = request.serverUrl;
-                    // Reconnect if we have a room
-                    if (currentRoomId) {
-                        connectToGraphQLRoom();
-                    }
-                }
-                sendResponse({ success: true });
-                break;
-                
-            default:
-                sendResponse({ success: false, error: 'Unknown action' });
-        }
-        
-        return true; // Keep message channel open for async response
-    });
-
-    // Generate room ID helper
-    function generateRoomId() {
-        return Math.random().toString(36).substring(2, 8).toUpperCase();
+// Listen for messages from popup
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    console.log('Content script received message:', message);
+    
+    switch (message.type) {
+        case 'ROOM_CREATED':
+        case 'ROOM_JOINED':
+            initializeWatchParty(message.roomId, message.userId, message.isHost);
+            sendResponse({ success: true });
+            break;
+            
+        case 'ROOM_LEFT':
+            leaveWatchParty();
+            sendResponse({ success: true });
+            break;
+            
+        case 'GET_STATUS':
+            sendResponse({
+                connected: watchPartyState.connected,
+                roomId: watchPartyState.roomId,
+                isHost: watchPartyState.isHost
+            });
+            break;
+            
+        default:
+            sendResponse({ success: false, error: 'Unknown message type' });
     }
+    
+    return true; // Keep message channel open for async response
+});
 
-    // Create room with specific ID
-    function createRoom(roomId = null) {
-        currentRoomId = roomId || generateRoomId();
-        
-        // Update URL
-        const url = new URL(window.location);
-        url.hash = `room=${currentRoomId}`;
-        window.history.replaceState({}, '', url);
-        
-        console.log(`[WatchTogether] Room created: ${currentRoomId}`);
-        
-        // Connect to GraphQL if available
-        if (isGraphQLEnabled && graphqlManager) {
-            connectToGraphQLRoom();
-        }
-        
-        // Update sidebar
-        if (sidebarIframe && sidebarIframe.contentWindow) {
-            sidebarIframe.contentWindow.postMessage({
-                type: 'roomCreated',
-                roomId: currentRoomId
-            }, '*');
-        }
+// Auto-join room if URL contains room ID
+document.addEventListener('DOMContentLoaded', async () => {
+    const roomId = checkForRoomInUrl();
+    if (roomId) {
+        console.log('Room ID found in URL:', roomId);
+        // Wait for extension to be ready
+        setTimeout(() => {
+            chrome.runtime.sendMessage({
+                type: 'AUTO_JOIN_ROOM',
+                roomId: roomId
+            });
+        }, 1000);
     }
+});
 
-    // Initialize when DOM is ready
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', initialize);
-    } else {
-        initialize();
-    }
+// Inject a script to access Netflix's internal player API (if needed)
+function injectScript() {
+    const script = document.createElement('script');
+    script.src = chrome.runtime.getURL('inject.js');
+    script.onload = function() {
+        this.remove();
+    };
+    (document.head || document.documentElement).appendChild(script);
+}
 
-    // Cleanup on page unload
-    window.addEventListener('beforeunload', () => {
-        if (isGraphQLEnabled && graphqlManager) {
-            graphqlManager.destroy();
-        }
-    });
-
-})(); 
+// Initialize
+console.log('Netflix Watch Party initialized');
+findVideoElement(); 
